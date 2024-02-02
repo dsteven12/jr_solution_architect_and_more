@@ -5,16 +5,23 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.chains import create_history_aware_retriever
+from langchain.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 from dotenv import load_dotenv
+from typing import Any, List
 
 load_dotenv()
 
-def get_response(user_input):
-    return "I don't know"
+def get_vectorstore_from_url(url: str) -> Chroma:
+    """
+    Creates a vector store from a document at the given URL.
 
-def get_vectorstore_from_url(url):
-    # get the text in document form
+    Args:
+    - url (str): The URL of the document to load and process.
+
+    Returns:
+    - a vector store initialized with document chunks.
+    """
     loader = WebBaseLoader(url)
     document = loader.load()
 
@@ -28,6 +35,16 @@ def get_vectorstore_from_url(url):
     return vector_store
 
 def get_context_retriever_chain(vector_store):
+    """
+    Creates a retriever chain for retrieving context-relevant documents.
+
+    Args:
+    - vector_store (Chroma): The vector store to use for retrieval.
+
+    Returns:
+    - a retrievalChain: A chain configured for history-aware document retrieval.
+    """
+    
     llm = ChatOpenAI()
 
     retriever = vector_store.as_retriever()
@@ -41,6 +58,50 @@ def get_context_retriever_chain(vector_store):
     retriever_chain = create_history_aware_retriever(llm, retriever, prompt)
 
     return retriever_chain
+
+def get_conversational_rag_chain(retriever_chain):
+    """
+    Creates a chain for generating responses based on retrieved documents and conversation history.
+
+    Args:
+    - retriever_chain: The chain used for retrieving context.
+
+    Returns:
+    - a retrievalChain: A chain for generating conversational responses.
+    """
+    llm = ChatOpenAI()
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "Answer the user's questions beased on the below context:\n\n{context}"),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("user", "{input}"),
+
+    ])
+
+    stuff_docs_chain = create_stuff_documents_chain(llm, prompt)
+
+    return create_retrieval_chain(retriever_chain, stuff_docs_chain)
+
+def get_response(user_input: str) -> str:
+    """
+    Generates a response to the user input using a conversational chain.
+
+    Args:
+    - user_input (str): The user's input message.
+
+    Returns:
+    - str: The generated response.
+    """
+    retriever_chain = get_context_retriever_chain(st.session_state.vector_store)
+    conversational_rag_chain = get_conversational_rag_chain(retriever_chain)
+
+    response = conversational_rag_chain.invoke({
+            "chat_history": st.session_state.chat_history,
+            "input": user_query
+        })
+    
+    return response['answer']
+
 
 #app config
 st.set_page_config(page_title="Chat with Celonis", page_icon="💬")
@@ -60,22 +121,21 @@ if web_url is None or web_url == "":
     st.info("Please enter a website URL")
 
 else: 
-    vector_store = get_vectorstore_from_url(web_url)
+    #session state
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = [
+            AIMessage(content="Hello, I am a bot. How can I help you?"),
+        ]
 
+    if "vector_store" not in st.session_state:
+        st.session_state.vector_store = get_vectorstore_from_url(web_url)
 
-    retriever_chain = get_context_retriever_chain(vector_store)
     #user input
     user_query = st.chat_input("Type your message here...")
     if user_query is not None and user_query != "":
         response = get_response(user_query)
         st.session_state.chat_history.append(HumanMessage(content=user_query))
         st.session_state.chat_history.append(AIMessage(content=response))
-
-        retrieved_docs = retriever_chain.invoke({
-            "chat_history": st.session_state.chat_history,
-            "input": user_query
-        })
-        st.write(retrieved_docs)
 
     #conversation
     for message in st.session_state.chat_history:
