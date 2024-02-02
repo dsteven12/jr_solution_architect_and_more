@@ -3,7 +3,9 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_community.document_loaders import WebBaseLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.chains import create_history_aware_retriever
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,7 +25,22 @@ def get_vectorstore_from_url(url):
     # create a vectorstore from the chunks
     vector_store = Chroma.from_documents(document_chunks, OpenAIEmbeddings())
 
-    return document_chunks
+    return vector_store
+
+def get_context_retriever_chain(vector_store):
+    llm = ChatOpenAI()
+
+    retriever = vector_store.as_retriever()
+
+    prompt = ChatPromptTemplate.from_messages([
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("user", "{input}"),
+        ("user", "Given the above conversation, generate a search query to look up in order to get the information relevant to the conversation")
+    ])
+
+    retriever_chain = create_history_aware_retriever(llm, retriever, prompt)
+
+    return retriever_chain
 
 #app config
 st.set_page_config(page_title="Chat with Celonis", page_icon="💬")
@@ -43,15 +60,22 @@ if web_url is None or web_url == "":
     st.info("Please enter a website URL")
 
 else: 
-    document_chunks = get_vectorstore_from_url(web_url)
-    with st.sidebar:
-        st.write(document_chunks)
+    vector_store = get_vectorstore_from_url(web_url)
+
+
+    retriever_chain = get_context_retriever_chain(vector_store)
     #user input
     user_query = st.chat_input("Type your message here...")
     if user_query is not None and user_query != "":
         response = get_response(user_query)
         st.session_state.chat_history.append(HumanMessage(content=user_query))
         st.session_state.chat_history.append(AIMessage(content=response))
+
+        retrieved_docs = retriever_chain.invoke({
+            "chat_history": st.session_state.chat_history,
+            "input": user_query
+        })
+        st.write(retrieved_docs)
 
     #conversation
     for message in st.session_state.chat_history:
